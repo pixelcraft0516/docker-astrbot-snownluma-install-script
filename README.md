@@ -1,3 +1,5 @@
+#所有代码均由DeepSeekHarness进行操作，
+
 # AstrBot + SnowLuma Ubuntu 一键部署
 
 本目录包含：
