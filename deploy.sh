@@ -11,7 +11,7 @@ if [ ! -t 0 ]; then
 fi
 
 RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; CYAN=$'\033[36m'; NC=$'\033[0m'
-TOTAL_STEPS=6
+TOTAL_STEPS=7
 CURRENT_STEP=0
 BAR_WIDTH=24
 STEP_START=0
@@ -157,7 +157,7 @@ echo
 echo -e "${GREEN}========== 时区 ==========${NC}"
 TZ_VALUE=$(ask "时区 (IANA)" "Asia/Shanghai")
 echo
-# ========== 新增：公网远程访问 ==========
+# ========== 公网远程访问 ==========
 echo -e "${GREEN}========== 公网远程访问 ==========${NC}"
 read -r -p "$(printf "${YELLOW}是否需要公网远程访问? [y/N]: ${NC}")" ENABLE_PUBLIC
 ENABLE_PUBLIC=${ENABLE_PUBLIC:-N}
@@ -301,6 +301,61 @@ begin_step "启动容器"
 run_with_anim "启动容器" "docker compose up -d" docker compose up -d
 end_step
 
+# ==================== 7. 生成一键启动脚本 ====================
+begin_step "生成一键启动脚本 (sbt)"
+
+START_SCRIPT="${DEPLOY_DIR}/start-bots.sh"
+cat > "$START_SCRIPT" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd "${DEPLOY_DIR}"
+
+echo "▶ 启动 AstrBot 与 SnowLuma..."
+docker compose up -d
+echo
+sleep 3
+
+echo "==================== 启动完成 ===================="
+echo "AstrBot WebUI:   ${ACCESS_BASE}:${ASTRBOT_WEBUI_PORT}"
+echo "SnowLuma WebUI:  ${ACCESS_BASE}:${SNOWLUMA_WEBUI_PORT}"
+echo "SnowLuma noVNC:  ${ACCESS_BASE}:${SNOWLUMA_NOVNC_PORT}"
+echo
+echo "========== 密码查询（SnowLuma 官方命令） =========="
+echo "SnowLuma WebUI 初始密码（账号 admin）:"
+docker logs snowluma --tail 80 2>&1 | grep -E '初始密码|initial credentials|password=' | tail -n 5 || echo "  (暂未找到，请稍后执行: sudo docker logs snowluma | grep -i password)"
+echo
+echo "SnowLuma noVNC / VNC 初始密码:"
+docker logs snowluma --tail 80 2>&1 | grep -iE 'vnc.*password|password.*vnc|VNC_PASSWD' | tail -n 5 || echo "  (暂未找到，请稍后执行: sudo docker logs snowluma | grep -i vnc)"
+echo
+echo "OneBot Token:    ${ONEBOT_TOKEN}"
+echo
+echo "重新查看密码: sudo docker logs snowluma 2>&1 | grep -iE 'password|初始密码'"
+EOF
+chmod +x "$START_SCRIPT"
+
+# 生成全局命令 sbt
+cat > /usr/local/bin/sbt <<'SBTEOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+START_SCRIPT="/opt/astrbot-snowluma/start-bots.sh"
+if [ "$EUID" -eq 0 ] || groups | grep -qw docker; then
+  exec bash "$START_SCRIPT"
+else
+  exec sudo bash "$START_SCRIPT"
+fi
+SBTEOF
+chmod +x /usr/local/bin/sbt
+
+# 将执行用户加入 docker 组（免 sudo）
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  usermod -aG docker "$SUDO_USER" 2>/dev/null || true
+  echo -e "${GREEN}已将用户 ${SUDO_USER} 加入 docker 组（重新登录后生效，之后 sbt 无需 sudo）${NC}"
+fi
+
+echo -e "${GREEN}启动脚本: ${START_SCRIPT}${NC}"
+echo -e "${GREEN}一键命令: ${GREEN}sbt${NC}"
+end_step
+
 # ==================== 完成 ====================
 echo
 echo -e "${GREEN}==================== 部署成功 ====================${NC}"
@@ -319,13 +374,10 @@ else
 fi
 echo
 echo -e "${YELLOW}后续连接步骤:${NC}"
-echo "1. 查看 SnowLuma WebUI 初始密码（账号 admin）:"
-echo "   docker logs snowluma 2>&1 | grep -E '初始密码|initial credentials|password=' | tail -n 3"
-echo "2. 查看 SnowLuma noVNC / VNC 初始密码:"
-echo "   docker logs snowluma 2>&1 | grep -iE 'vnc.*password|password.*vnc|VNC_PASSWD' | tail -n 3"
-echo "3. 打开 noVNC 地址，用查到的 VNC 密码登录并扫码登录 QQ。"
-echo "4. SnowLuma WebUI 开启 OneBot WebSocket 服务端，端口 3001，Token: ${ONEBOT_TOKEN}"
-echo "5. AstrBot WebUI 接入 OneBot v11 反向 WS，端口 ${ASTRBOT_WS_PORT}，Token 同上。"
+echo -e "1. 随时运行 ${GREEN}sbt${NC} 启动/重启服务，并自动输出 SnowLuma WebUI 与 VNC 初始密码。"
+echo "2. 打开 noVNC 地址，用查到的 VNC 密码登录并扫码登录 QQ。"
+echo "3. SnowLuma WebUI 开启 OneBot WebSocket 服务端，端口 3001，Token: ${ONEBOT_TOKEN}"
+echo "4. AstrBot WebUI 接入 OneBot v11 反向 WS，端口 ${ASTRBOT_WS_PORT}，Token 同上。"
 echo "   连接地址: ws://astrbot:${ASTRBOT_WS_PORT}/ws"
 echo
 echo -e "完整安装日志: ${LOG_FILE}"
