@@ -36,10 +36,10 @@ Compose v2。
 
 ## 2. 安装
 
-把脚本上传到服务器后执行：
+服务器终端执行：
 
-```bash
-sudo bash install-astrbot-snowluma.sh
+```curl -fsSL -o install-astrbot-install.sh https://raw.githubusercontent.com/pixelcraft0516/docker-astrbot-snownluma-install-script/refs/heads/main/install-astrbot-snowluma.sh
+sudo bash install-astrbot-install.sh
 ```
 
 脚本会先检查系统，然后询问：
