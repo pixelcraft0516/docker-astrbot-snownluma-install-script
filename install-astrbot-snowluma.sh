@@ -1608,7 +1608,7 @@ write_manager_script() {
 print_final_summary() {
   local f="$INSTALL_DIR/credentials.txt"
   say ""
-  info "================ 安装完成 ================"
+  info "================ 安装完成 请在防火墙开放5099，6081，6185端口================"
   if [[ -f "$f" ]]; then
     cat "$f"
   else
