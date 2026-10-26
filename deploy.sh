@@ -1,383 +1,298 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 
-# ==================== 前置：必须交互执行 ====================
-if [ ! -t 0 ]; then
-  echo "错误：脚本必须从终端交互执行，不能用 curl | bash。"
-  echo "请先下载再执行："
-  echo "  curl -fsSL -o /tmp/deploy.sh https://raw.githubusercontent.com/pixelcraft0516/docker-astrbot-snownluma-install-script/main/deploy.sh"
-  echo "  sudo bash /tmp/deploy.sh"
+# ============================================================
+# sbt-deploy.sh — 一键部署 AstrBot + SnowLuma
+# 适用: Debian/Ubuntu/CentOS (Linux) 全新环境
+# ============================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+STEP_TOTAL=6
+STEP=0
+
+progress_bar() {
+  local current=$1
+  local total=$2
+  local width=40
+  local filled=$(( current * width / total ))
+  local empty=$(( width - filled ))
+  local bar=$(printf '%*s' "$filled" '' | tr ' ' '█')
+  local blank=$(printf '%*s' "$empty" '')
+  printf "\r${BLUE}[%s%s] %d/%d${NC}" "$bar" "$blank" "$current" "$total"
+}
+
+step() {
+  STEP=$((STEP + 1))
+  progress_bar "$STEP" "$STEP_TOTAL"
+  echo ""
+  echo -e "${YELLOW}>>> $1${NC}"
+  echo -e "${BLUE}    $ $2${NC}"
+}
+
+# ---------- 0. 检查 root ----------
+if [[ $EUID -ne 0 ]]; then
+  echo -e "${RED}请使用 sudo 运行此脚本: sudo bash $0${NC}"
   exit 1
 fi
 
-RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; BLUE=$'\033[34m'; CYAN=$'\033[36m'; NC=$'\033[0m'
-TOTAL_STEPS=7
-CURRENT_STEP=0
-BAR_WIDTH=24
-STEP_START=0
-STEP_END=0
-STEP_LABEL=""
-ANIM_PID=""
-LOG_FILE="/tmp/deploy-astrbot-snowluma.log"
+clear
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}  AstrBot + SnowLuma 一键部署${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo ""
 
-term_cols() { tput cols 2>/dev/null || echo 80; }
+# ---------- 交互配置 ----------
+echo -e "${YELLOW}[1/3] 是否需要远程公网访问？${NC}"
+read -rp "请输入 y/n (默认 n): " PUBLIC_ACCESS
+PUBLIC_ACCESS=${PUBLIC_ACCESS:-n}
 
-build_bar() {
-  local pct=$1
-  local filled=$((pct * BAR_WIDTH / 100))
-  local empty=$((BAR_WIDTH - filled))
-  local f="" e="" i
-  for ((i=0;i<filled;i++)); do f+="#"; done
-  for ((i=0;i<empty;i++)); do e+=" "; done
-  printf '%s%s' "$f" "$e"
-}
-
-fit_cmd() {
-  local cmd="${1//$'\n'/ }"
-  local cols max
-  cols=$(term_cols)
-  max=$((cols - 8))
-  [ "$max" -lt 20 ] && max=20
-  if [ "${#cmd}" -gt "$max" ]; then
-    printf '%s…' "${cmd:0:$((max-1))}"
-  else
-    printf '%s' "$cmd"
-  fi
-}
-
-render_pair() {
-  local pct="$1" label="$2" spin="$3" cmd="$4"
-  local bar
-  bar=$(build_bar "$pct")
-  printf "\r\033[2K${BLUE}[%s] %3d%%${NC}  %s ${CYAN}%s${NC}" "$bar" "$pct" "$label" "$spin"
-  printf "\n\033[2K${YELLOW}  ▶ %s${NC}" "$(fit_cmd "$cmd")"
-  printf "\033[1A\r"
-}
-
-clear_pair() {
-  printf "\r\033[2K"
-  printf "\n\r\033[2K"
-  printf "\033[1A\r"
-}
-
-start_anim() {
-  local label="$1" cmd="$2"
-  (
-    local pct=$STEP_START
-    local spin=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local i=0
-    while true; do
-      i=$(( (i + 1) % 10 ))
-      [ "$pct" -lt $((STEP_END - 2)) ] && pct=$((pct + 1))
-      render_pair "$pct" "$label" "${spin[$i]}" "$cmd"
-      sleep 0.1
-    done
-  ) &
-  ANIM_PID=$!
-}
-
-stop_anim() {
-  if [ -n "${ANIM_PID:-}" ]; then
-    kill "$ANIM_PID" 2>/dev/null || true
-    wait "$ANIM_PID" 2>/dev/null || true
-    ANIM_PID=""
-  fi
-}
-
-run_with_anim() {
-  local label="$1" cmd_desc="$2"; shift 2
-  local start_ts=$(( $(date +%s%N) / 1000000 ))
-  start_anim "$label" "$cmd_desc"
-  local rc=0
-  "$@" >>"$LOG_FILE" 2>&1 || rc=$?
-  local elapsed=$(( $(date +%s%N) / 1000000 - start_ts ))
-  [ "$elapsed" -lt 300 ] && sleep "0.$(( 300 - elapsed ))"
-  stop_anim
-  clear_pair
-  if [ $rc -ne 0 ]; then
-    echo -e "${RED}命令失败 (退出码 $rc): $cmd_desc${NC}"
-    echo -e "${YELLOW}日志末尾:${NC}"
-    tail -n 20 "$LOG_FILE"
-    return $rc
-  fi
-  return 0
-}
-
-begin_step() {
-  CURRENT_STEP=$((CURRENT_STEP + 1))
-  STEP_LABEL="$1"
-  STEP_START=$(((CURRENT_STEP - 1) * 100 / TOTAL_STEPS))
-  STEP_END=$((CURRENT_STEP * 100 / TOTAL_STEPS))
-  echo
-  echo -e "${BLUE}▶ 步骤 ${CURRENT_STEP}/${TOTAL_STEPS}: ${STEP_LABEL}${NC}"
-}
-
-end_step() {
-  local bar
-  bar=$(build_bar "$STEP_END")
-  printf "${BLUE}[%s] %3d%%${NC}  ${GREEN}✓ %s${NC}\n" "$bar" "$STEP_END" "$STEP_LABEL"
-}
-
-ask() {
-  local prompt="$1" default="$2" var
-  read -r -p "$(printf "${YELLOW}%s${NC} [默认: %s]: " "$prompt" "$default")" var
-  echo "${var:-$default}"
-}
-
-trap 'stop_anim' EXIT
-: > "$LOG_FILE"
-
-# ==================== 1. 检查环境 ====================
-begin_step "检查权限与 Ubuntu 版本"
-[[ $EUID -eq 0 ]] || { echo -e "${RED}请使用 sudo 或 root 运行${NC}"; exit 1; }
-if ! command -v lsb_release &>/dev/null; then
-  run_with_anim "安装 lsb-release" "apt-get update && apt-get install -y lsb-release" \
-    bash -c 'apt-get update -qq && apt-get install -y -qq lsb-release'
-fi
-UBUNTU_VER=$(lsb_release -rs 2>/dev/null || echo unknown)
-UBUNTU_CODENAME=$(lsb_release -cs 2>/dev/null || echo noble)
-end_step
-
-# ==================== 2. 交互配置 ====================
-begin_step "收集配置参数"
-echo
-echo -e "${GREEN}========== AstrBot ==========${NC}"
-ASTRBOT_WEBUI_PORT=$(ask "AstrBot WebUI 端口" "6185")
-ASTRBOT_WS_PORT=$(ask "AstrBot OneBot v11 反向 WebSocket 端口" "6199")
-echo
-echo -e "${GREEN}========== SnowLuma ==========${NC}"
-SNOWLUMA_WEBUI_PORT=$(ask "SnowLuma WebUI 端口" "5099")
-SNOWLUMA_NOVNC_PORT=$(ask "SnowLuma noVNC 端口（扫码登录用）" "6081")
-SNOWLUMA_ONEBOT_WS_PORT=$(ask "SnowLuma OneBot WebSocket 端口" "3001")
-echo
-echo -e "${GREEN}========== OneBot Token ==========${NC}"
-DEFAULT_TOKEN=$(openssl rand -hex 16 2>/dev/null || date +%s%N | sha256sum | cut -c1-32)
-ONEBOT_TOKEN=$(ask "OneBot Token（回车自动生成随机值）" "$DEFAULT_TOKEN")
-echo
-echo -e "${GREEN}========== 时区 ==========${NC}"
-TZ_VALUE=$(ask "时区 (IANA)" "Asia/Shanghai")
-echo
-# ========== 公网远程访问 ==========
-echo -e "${GREEN}========== 公网远程访问 ==========${NC}"
-read -r -p "$(printf "${YELLOW}是否需要公网远程访问? [y/N]: ${NC}")" ENABLE_PUBLIC
-ENABLE_PUBLIC=${ENABLE_PUBLIC:-N}
 PUBLIC_IP=""
-if [[ "$ENABLE_PUBLIC" =~ ^[Yy]$ ]]; then
-  AUTO_IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null || echo "")
-  read -r -p "$(printf "${YELLOW}请输入公网地址/IP${AUTO_IP:+ (回车自动使用 $AUTO_IP)}: ${NC}")" PUBLIC_IP
-  PUBLIC_IP=${PUBLIC_IP:-$AUTO_IP}
-  if [ -z "$PUBLIC_IP" ]; then
-    echo -e "${RED}未获取到公网 IP，将回退为仅本地访问。${NC}"
-    ENABLE_PUBLIC="N"
+if [[ "$PUBLIC_ACCESS" =~ ^[Yy] ]]; then
+  echo -e "请输入公网 IP（直接回车自动读取）:"
+  read -rp "公网 IP: " INPUT_IP
+  if [[ -z "$INPUT_IP" ]]; then
+    echo -e "${BLUE}正在自动获取公网 IP...${NC}"
+    PUBLIC_IP=$(curl -s --max-time 10 https://api.ipify.org || curl -s --max-time 10 https://ifconfig.me || true)
+    if [[ -z "$PUBLIC_IP" ]]; then
+      echo -e "${RED}自动获取失败，请手动重新运行并输入公网 IP。${NC}"
+      exit 1
+    fi
+  else
+    PUBLIC_IP="$INPUT_IP"
   fi
-fi
-
-if [[ "$ENABLE_PUBLIC" =~ ^[Yy]$ ]] && [ -n "$PUBLIC_IP" ]; then
-  BIND_ADDR="0.0.0.0"
-  ACCESS_BASE="http://${PUBLIC_IP}"
+  echo -e "${GREEN}将使用公网地址: $PUBLIC_IP${NC}"
 else
-  BIND_ADDR="127.0.0.1"
-  ACCESS_BASE="http://127.0.0.1"
-fi
-# ====================================
-
-echo
-echo -e "${YELLOW}配置确认:${NC}"
-echo "  AstrBot WebUI:      ${ASTRBOT_WEBUI_PORT}"
-echo "  AstrBot 反向 WS:    ${ASTRBOT_WS_PORT}"
-echo "  SnowLuma WebUI:     ${SNOWLUMA_WEBUI_PORT}"
-echo "  SnowLuma noVNC:     ${SNOWLUMA_NOVNC_PORT}"
-echo "  SnowLuma OneBot WS: ${SNOWLUMA_ONEBOT_WS_PORT}"
-echo "  OneBot Token:       ${ONEBOT_TOKEN:0:8}..."
-echo "  时区:               ${TZ_VALUE}"
-if [[ "$ENABLE_PUBLIC" =~ ^[Yy]$ ]] && [ -n "$PUBLIC_IP" ]; then
-  echo "  公网访问:            是 (${PUBLIC_IP})"
-else
-  echo "  公网访问:            否（仅本地）"
-fi
-read -r -p "$(printf "${YELLOW}确认继续? [Y/n]: ${NC}")" CONFIRM
-CONFIRM=${CONFIRM:-Y}
-[[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "已取消"; exit 0; }
-end_step
-
-# ==================== 3. 安装 Docker CE ====================
-begin_step "安装 Docker CE"
-if command -v docker &>/dev/null && docker compose version &>/dev/null; then
-  echo -e "${GREEN}Docker 与 Compose 插件已安装，跳过。${NC}"
-else
-  case "$UBUNTU_CODENAME" in
-    focal|jammy|noble|resolute) DOCKER_CODENAME="$UBUNTU_CODENAME" ;;
-    *) DOCKER_CODENAME="noble" ;;
-  esac
-  export DOCKER_CODENAME
-
-  run_with_anim "清理旧版 Docker 包" \
-    "apt-get remove -y docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc" \
-    bash -c 'apt-get remove -y docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc || true'
-
-  run_with_anim "更新软件源" "apt-get update" apt-get update -qq
-
-  run_with_anim "安装依赖" "apt-get install -y ca-certificates curl gnupg" \
-    apt-get install -y -qq ca-certificates curl gnupg
-
-  run_with_anim "添加 Docker GPG 密钥" \
-    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg" \
-    bash -c 'install -m 0755 -d /etc/apt/keyrings && rm -f /etc/apt/keyrings/docker.gpg && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && chmod a+r /etc/apt/keyrings/docker.gpg'
-
-  run_with_anim "添加 Docker APT 源" \
-    "echo 'deb [arch=...] ... ${DOCKER_CODENAME} stable' > /etc/apt/sources.list.d/docker.list" \
-    bash -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${DOCKER_CODENAME} stable" > /etc/apt/sources.list.d/docker.list'
-
-  run_with_anim "更新源" "apt-get update" apt-get update -qq
-
-  run_with_anim "安装 Docker CE 与 Compose 插件" \
-    "apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin" \
-    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-  run_with_anim "启动并启用 Docker 服务" "systemctl enable --now docker" \
-    systemctl enable --now docker
+  echo -e "${GREEN}将使用本机地址进行访问。${NC}"
 fi
 
-if ! docker compose version &>/dev/null; then
-  echo -e "${RED}Docker Compose 插件不可用，请检查安装日志。${NC}"
-  exit 1
-fi
-end_step
+echo ""
+echo -e "${YELLOW}[2/3] 端口配置（直接回车使用默认值）${NC}"
 
-# ==================== 4. 生成 compose ====================
-begin_step "生成 docker-compose.yml"
-DEPLOY_DIR="/opt/astrbot-snowluma"
-mkdir -p "${DEPLOY_DIR}/data-astrbot" "${DEPLOY_DIR}/data-snowluma"
-cd "${DEPLOY_DIR}"
-cat > docker-compose.yml <<EOF
+read -rp "AstrBot WebUI 端口 (默认 6185): " ASTRBOT_WEBUI_PORT
+ASTRBOT_WEBUI_PORT=${ASTRBOT_WEBUI_PORT:-6185}
+
+read -rp "AstrBot OneBot 端口 (默认 6199): " ASTRBOT_ONEBOT_PORT
+ASTRBOT_ONEBOT_PORT=${ASTRBOT_ONEBOT_PORT:-6199}
+
+read -rp "SnowLuma WebUI 端口 (默认 5099): " SNOWLUMA_WEBUI_PORT
+SNOWLUMA_WEBUI_PORT=${SNOWLUMA_WEBUI_PORT:-5099}
+
+read -rp "SnowLuma noVNC 端口 (默认 6081): " SNOWLUMA_VNC_PORT
+SNOWLUMA_VNC_PORT=${SNOWLUMA_VNC_PORT:-6081}
+
+read -rp "SnowLuma OneBot WebSocket 端口 (默认 3001，仅容器内部使用): " SNOWLUMA_ONEBOT_WS_PORT
+SNOWLUMA_ONEBOT_WS_PORT=${SNOWLUMA_ONEBOT_WS_PORT:-3001}
+
+echo ""
+echo -e "${YELLOW}[3/3] 安全设置${NC}"
+read -rsp "SnowLuma VNC 密码（直接回车使用随机生成）: " VNC_PASSWD
+echo ""
+if [[ -z "$VNC_PASSWD" ]]; then
+  VNC_PASSWD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12)
+  echo -e "${GREEN}已随机生成 VNC 密码: ${VNC_PASSWD}${NC}"
+fi
+
+echo ""
+echo -e "${GREEN}配置确认:${NC}"
+echo "  公网访问: ${PUBLIC_ACCESS}  ${PUBLIC_IP:+(IP: $PUBLIC_IP)}"
+echo "  AstrBot WebUI: :$ASTRBOT_WEBUI_PORT"
+echo "  AstrBot OneBot: :$ASTRBOT_ONEBOT_PORT"
+echo "  SnowLuma WebUI: :$SNOWLUMA_WEBUI_PORT"
+echo "  SnowLuma noVNC: :$SNOWLUMA_VNC_PORT"
+echo "  VNC 密码: $VNC_PASSWD"
+echo ""
+read -rp "确认开始部署？(y/n，默认 y): " CONFIRM
+[[ "$CONFIRM" =~ ^[Nn] ]] && exit 0
+
+# ---------- 部署目录 ----------
+DEPLOY_DIR="/opt/sbt-stack"
+mkdir -p "$DEPLOY_DIR"/{astrbot-data,snowluma-data,snowluma-qq-config,snowluma-qq-data}
+
+# ---------- 1. 安装 Docker CE ----------
+step "安装 Docker CE..." "curl -fsSL https://get.docker.com | bash -s docker"
+if ! command -v docker &>/dev/null; then
+  curl -fsSL https://get.docker.com | bash -s docker
+fi
+systemctl enable docker --now &>/dev/null || true
+
+# 配置镜像加速（可选，国内环境）
+if [[ ! -f /etc/docker/daemon.json ]]; then
+  mkdir -p /etc/docker
+  cat > /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": ["https://docker.m.daocloud.io"]
+}
+EOF
+  systemctl restart docker
+fi
+
+# ---------- 2. 生成 docker-compose.yml ----------
+step "生成 docker-compose.yml..." "写入 $DEPLOY_DIR/docker-compose.yml"
+
+cat > "$DEPLOY_DIR/docker-compose.yml" <<YAML
 services:
+  snowluma:
+    image: motricseven7/snowluma:latest
+    container_name: snowluma
+    hostname: snowluma
+    restart: unless-stopped
+    shm_size: 1gb
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      TZ: Asia/Shanghai
+      VNC_PASSWD: "${VNC_PASSWD}"
+      SNOWLUMA_UID: "1000"
+      SNOWLUMA_GID: "1000"
+      SNOWLUMA_WEBUI_PORT: "${SNOWLUMA_WEBUI_PORT}"
+      SNOWLUMA_ACCEPT_EULA: "1"
+      SNOWLUMA_ACCEPT_PRIVACY: "1"
+    ports:
+      - "${SNOWLUMA_VNC_PORT}:6081"
+      - "${SNOWLUMA_WEBUI_PORT}:${SNOWLUMA_WEBUI_PORT}"
+    volumes:
+      - ./snowluma-data:/app/snowluma-data
+      - ./snowluma-qq-config:/app/.config
+      - ./snowluma-qq-data:/app/.local/share
+    networks:
+      - botnet
+
   astrbot:
     image: soulter/astrbot:latest
     container_name: astrbot
     restart: unless-stopped
-    ports:
-      - "${BIND_ADDR}:${ASTRBOT_WEBUI_PORT}:6185"
-      - "${BIND_ADDR}:${ASTRBOT_WS_PORT}:6199"
-    volumes:
-      - ./data-astrbot:/AstrBot/data
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     environment:
-      - TZ=${TZ_VALUE}
-    networks:
-      - botnet
-
-  snowluma:
-    image: motricseven7/snowluma:latest
-    container_name: snowluma
-    restart: unless-stopped
+      TZ: Asia/Shanghai
     ports:
-      - "${BIND_ADDR}:${SNOWLUMA_WEBUI_PORT}:5099"
-      - "${BIND_ADDR}:${SNOWLUMA_NOVNC_PORT}:6081"
-      - "${BIND_ADDR}:${SNOWLUMA_ONEBOT_WS_PORT}:3001"
+      - "${ASTRBOT_WEBUI_PORT}:6185"
+      - "${ASTRBOT_ONEBOT_PORT}:6199"
     volumes:
-      - ./data-snowluma:/app/data
+      - ./astrbot-data:/AstrBot/data
       - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
-    environment:
-      - TZ=${TZ_VALUE}
-      - SNOWLUMA_ACCESS_TOKEN=${ONEBOT_TOKEN}
     networks:
       - botnet
 
 networks:
   botnet:
     driver: bridge
-EOF
-end_step
+YAML
 
-# ==================== 5. 拉取镜像 ====================
-begin_step "拉取镜像"
-run_with_anim "拉取 AstrBot 与 SnowLuma 镜像" "docker compose pull" docker compose pull
-end_step
-
-# ==================== 6. 启动容器 ====================
-begin_step "启动容器"
-run_with_anim "启动容器" "docker compose up -d" docker compose up -d
-end_step
-
-# ==================== 7. 生成一键启动脚本 ====================
-begin_step "生成一键启动脚本 (sbt)"
-
-START_SCRIPT="${DEPLOY_DIR}/start-bots.sh"
-cat > "$START_SCRIPT" <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-cd "${DEPLOY_DIR}"
-
-echo "▶ 启动 AstrBot 与 SnowLuma..."
+# ---------- 3. 启动容器 ----------
+step "拉取镜像并启动容器..." "docker compose up -d"
+cd "$DEPLOY_DIR"
 docker compose up -d
-echo
-sleep 3
 
-echo "==================== 启动完成 ===================="
-echo "AstrBot WebUI:   ${ACCESS_BASE}:${ASTRBOT_WEBUI_PORT}"
-echo "SnowLuma WebUI:  ${ACCESS_BASE}:${SNOWLUMA_WEBUI_PORT}"
-echo "SnowLuma noVNC:  ${ACCESS_BASE}:${SNOWLUMA_NOVNC_PORT}"
-echo
-echo "========== 密码查询（SnowLuma 官方命令） =========="
-echo "SnowLuma WebUI 初始密码（账号 admin）:"
-docker logs snowluma --tail 80 2>&1 | grep -E '初始密码|initial credentials|password=' | tail -n 5 || echo "  (暂未找到，请稍后执行: sudo docker logs snowluma | grep -i password)"
-echo
-echo "SnowLuma noVNC / VNC 初始密码:"
-docker logs snowluma --tail 80 2>&1 | grep -iE 'vnc.*password|password.*vnc|VNC_PASSWD' | tail -n 5 || echo "  (暂未找到，请稍后执行: sudo docker logs snowluma | grep -i vnc)"
-echo
-echo "OneBot Token:    ${ONEBOT_TOKEN}"
-echo
-echo "重新查看密码: sudo docker logs snowluma 2>&1 | grep -iE 'password|初始密码'"
-EOF
-chmod +x "$START_SCRIPT"
+# ---------- 4. 等待并提取 SnowLuma WebUI 密码 ----------
+step "提取初始密码..." "docker logs snowluma 2>&1 | grep -i 'password'"
+echo -e "${YELLOW}等待 SnowLuma 初始化（约 15 秒）...${NC}"
+sleep 15
 
-# 生成全局命令 sbt
-cat > /usr/local/bin/sbt <<'SBTEOF'
+SNOWLUMA_WEBUI_PASSWORD=""
+for i in $(seq 1 20); do
+  SNOWLUMA_WEBUI_PASSWORD=$(docker logs snowluma 2>&1 | grep -iEo 'password[=:][^ ]+' | head -1 | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
+  [[ -n "$SNOWLUMA_WEBUI_PASSWORD" ]] && break
+  sleep 3
+done
+
+# ---------- 5. 创建 sbt 启动脚本 ----------
+step "创建 sbt 启动脚本..." "写入 /usr/local/bin/sbt"
+cat > /usr/local/bin/sbt <<'SBT_EOF'
 #!/usr/bin/env bash
-set -Eeuo pipefail
-START_SCRIPT="/opt/astrbot-snowluma/start-bots.sh"
-if [ "$EUID" -eq 0 ] || groups | grep -qw docker; then
-  exec bash "$START_SCRIPT"
-else
-  exec sudo bash "$START_SCRIPT"
+set -euo pipefail
+DEPLOY_DIR="/opt/sbt-stack"
+cd "$DEPLOY_DIR"
+
+echo "启动 AstrBot + SnowLuma ..."
+docker compose up -d
+
+# 等待服务就绪
+sleep 8
+
+# 动态读取配置中的端口
+ASTRBOT_WEBUI_PORT=$(grep -oP '"\K[^"]+(?=:6185)' docker-compose.yml 2>/dev/null | head -1 || echo "6185")
+SNOWLUMA_WEBUI_PORT=$(grep -oP '"\K[^"]+(?=:5099)' docker-compose.yml 2>/dev/null | head -1 || echo "5099")
+SNOWLUMA_VNC_PORT=$(grep -oP '"\K[^"]+(?=:6081)' docker-compose.yml 2>/dev/null | head -1 || echo "6081")
+
+PUBLIC_IP=""
+if [[ -f /opt/sbt-stack/.public_ip ]]; then
+  PUBLIC_IP=$(cat /opt/sbt-stack/.public_ip)
 fi
-SBTEOF
+HOST="${PUBLIC_IP:-127.0.0.1}"
+
+echo ""
+echo "=============================="
+echo "  AstrBot  WebUI : http://$HOST:$ASTRBOT_WEBUI_PORT"
+echo "  SnowLuma WebUI : http://$HOST:$SNOWLUMA_WEBUI_PORT"
+echo "  SnowLuma VNC   : http://$HOST:$SNOWLUMA_VNC_PORT"
+echo "=============================="
+
+# 提取 WebUI 密码
+PASS=$(docker logs snowluma 2>&1 | grep -iEo 'password[=:][^ ]+' | head -1 | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
+[[ -n "$PASS" ]] && echo "  SnowLuma WebUI 密码: $PASS"
+echo "  VNC 密码: 请查看部署时设置（或 SnowLuma 日志）"
+echo "=============================="
+SBT_EOF
 chmod +x /usr/local/bin/sbt
 
-# 将执行用户加入 docker 组（免 sudo）
-if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-  usermod -aG docker "$SUDO_USER" 2>/dev/null || true
-  echo -e "${GREEN}已将用户 ${SUDO_USER} 加入 docker 组（重新登录后生效，之后 sbt 无需 sudo）${NC}"
+# 记录公网 IP 供 sbt 使用
+if [[ -n "$PUBLIC_IP" ]]; then
+  echo "$PUBLIC_IP" > "$DEPLOY_DIR/.public_ip"
 fi
 
-echo -e "${GREEN}启动脚本: ${START_SCRIPT}${NC}"
-echo -e "${GREEN}一键命令: ${GREEN}sbt${NC}"
-end_step
+# ---------- 6. 输出连接指引 ----------
+step "完成！生成连接指引..." "输出 AstrBot OneBot 连接说明"
 
-# ==================== 完成 ====================
-echo
-echo -e "${GREEN}==================== 部署成功 ====================${NC}"
-echo -e "AstrBot WebUI:   ${BLUE}${ACCESS_BASE}:${ASTRBOT_WEBUI_PORT}${NC}"
-echo -e "SnowLuma WebUI:  ${BLUE}${ACCESS_BASE}:${SNOWLUMA_WEBUI_PORT}${NC}"
-echo -e "SnowLuma noVNC:  ${BLUE}${ACCESS_BASE}:${SNOWLUMA_NOVNC_PORT}${NC}"
-echo -e "OneBot Token:    ${YELLOW}${ONEBOT_TOKEN:0:12}...${NC}"
-echo
-if [[ "$BIND_ADDR" == "127.0.0.1" ]]; then
-  echo -e "${YELLOW}安全提示: 端口已绑定 127.0.0.1，请通过 SSH 隧道访问:${NC}"
-  echo "  ssh -L ${ASTRBOT_WEBUI_PORT}:127.0.0.1:${ASTRBOT_WEBUI_PORT} \\"
-  echo "      -L ${SNOWLUMA_WEBUI_PORT}:127.0.0.1:${SNOWLUMA_WEBUI_PORT} \\"
-  echo "      -L ${SNOWLUMA_NOVNC_PORT}:127.0.0.1:${SNOWLUMA_NOVNC_PORT} user@服务器IP"
-else
-  echo -e "${YELLOW}安全提示: 端口已绑定 0.0.0.0，请确保云安全组/防火墙已放行 ${ASTRBOT_WEBUI_PORT}, ${SNOWLUMA_WEBUI_PORT}, ${SNOWLUMA_NOVNC_PORT} 等端口。${NC}"
-fi
-echo
-echo -e "${YELLOW}后续连接步骤:${NC}"
-echo -e "1. 随时运行 ${GREEN}sbt${NC} 启动/重启服务，并自动输出 SnowLuma WebUI 与 VNC 初始密码。"
-echo "2. 打开 noVNC 地址，用查到的 VNC 密码登录并扫码登录 QQ。"
-echo "3. SnowLuma WebUI 开启 OneBot WebSocket 服务端，端口 3001，Token: ${ONEBOT_TOKEN}"
-echo "4. AstrBot WebUI 接入 OneBot v11 反向 WS，端口 ${ASTRBOT_WS_PORT}，Token 同上。"
-echo "   连接地址: ws://astrbot:${ASTRBOT_WS_PORT}/ws"
-echo
-echo -e "完整安装日志: ${LOG_FILE}"
+cat > "$DEPLOY_DIR/连接指引.txt" <<GUIDE
+============================================================
+  AstrBot + SnowLuma 部署完成
+============================================================
+
+【WebUI 地址】
+  AstrBot  : http://${PUBLIC_IP:-127.0.0.1}:${ASTRBOT_WEBUI_PORT}
+  SnowLuma : http://${PUBLIC_IP:-127.0.0.1}:${SNOWLUMA_WEBUI_PORT}
+  VNC      : http://${PUBLIC_IP:-127.0.0.1}:${SNOWLUMA_VNC_PORT}
+
+【密码】
+  SnowLuma WebUI 初始账号: admin
+  SnowLuma WebUI 初始密码: ${SNOWLUMA_WEBUI_PASSWORD:-请查看 docker logs snowluma}
+  VNC 密码: ${VNC_PASSWD}
+
+【下一步：在 AstrBot WebUI 中连接 SnowLuma】
+AstrBot 的 OneBot 连接需在 WebUI 中手动完成（官方未提供环境变量注入方式）：
+
+1. 打开 AstrBot WebUI: http://${PUBLIC_IP:-127.0.0.1}:${ASTRBOT_WEBUI_PORT}
+2. 左侧菜单 → 消息平台 → 新增适配器
+3. 选择 “aiocqhttp (OneBot v11)”
+4. 连接方式选择 “正向 WebSocket”（AstrBot 主动连接 SnowLuma）
+5. 地址填写: ws://snowluma:${SNOWLUMA_ONEBOT_WS_PORT}
+   （AstrBot 容器内可通过服务名 snowluma 访问 SnowLuma）
+6. Token 留空（除非你在 SnowLuma WebUI 中设置了 OneBot access token）
+7. 保存并启用
+
+【SnowLuma 登录 QQ】
+1. 打开 SnowLuma WebUI，使用 admin + 上述密码登录
+2. 在 WebUI 中启动 QQ 实例，用手机扫码登录
+3. 确保 OneBot WebSocket 服务端已开启（默认端口 ${SNOWLUMA_ONEBOT_WS_PORT}）
+
+【日常启动】
+输入 sbt 即可启动全部服务，并自动输出地址和密码。
+
+【配置文件位置】
+  $DEPLOY_DIR/docker-compose.yml
+  数据目录: $DEPLOY_DIR/*-data
+============================================================
+GUIDE
+
+echo ""
+progress_bar "$STEP_TOTAL" "$STEP_TOTAL"
+echo ""
+echo -e "${GREEN}部署完成！连接指引已保存至: $DEPLOY_DIR/连接指引.txt${NC}"
+echo ""
+cat "$DEPLOY_DIR/连接指引.txt"
