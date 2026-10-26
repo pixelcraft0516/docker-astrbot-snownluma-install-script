@@ -12,12 +12,36 @@ TOTAL_STEPS=6; CURRENT_STEP=0; BAR_WIDTH=24; STEP_START=0; STEP_END=0; STEP_LABE
 LOG_FILE="/tmp/deploy-astrbot-snowluma.log"
 
 term_cols() { tput cols 2>/dev/null || echo 80; }
-build_bar() { local p=$1 f=$((p*BAR_WIDTH/100)) e=$((BAR_WIDTH-f)) i; for((i=0;i<f;i++));do printf '#';done; for((i=0;i<e;i++));do printf ' ';done; }
-fit_cmd() { local c="${1//$'\n'/ }" w=$(term_cols) m=$((w-8)); [ $m -lt 20 ]&&m=20; [ ${#c} -gt $m ]&&printf '%s…' "${c:0:$((m-1))}"||printf '%s' "$c"; }
+build_bar() {
+  local p=$1
+  local f=$(( p * BAR_WIDTH / 100 ))
+  local e=$(( BAR_WIDTH - f ))
+  local i
+  for ((i=0;i<f;i++)); do printf '#'; done
+  for ((i=0;i<e;i++)); do printf ' '; done
+}
+
+fit_cmd() {
+  local c="${1//$'\n'/ }"
+  local w
+  w=$(term_cols)
+  local m=$(( w - 8 ))
+  [ "$m" -lt 20 ] && m=20
+  if [ "${#c}" -gt "$m" ]; then
+    printf '%s…' "${c:0:$((m-1))}"
+  else
+    printf '%s' "$c"
+  fi
+}
 
 render_pair() {
-  local p=$1 l=$2 s=$3 c=$4
-  printf "\r\033[2K${BLUE}[%s] %3d%%${NC}  %s ${CYAN}%s${NC}" "$(build_bar $p)" $p "$l" "$s"
+  local p=$1
+  local l=$2
+  local s=$3
+  local c=$4
+  local bar
+  bar=$(build_bar "$p")
+  printf "\r\033[2K${BLUE}[%s] %3d%%${NC}  %s ${CYAN}%s${NC}" "$bar" "$p" "$l" "$s"
   printf "\n\033[2K${YELLOW}  ▶ %s${NC}" "$(fit_cmd "$c")"
   printf "\033[1A\r"
 }
