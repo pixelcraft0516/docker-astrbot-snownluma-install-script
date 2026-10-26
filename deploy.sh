@@ -209,44 +209,102 @@ step "创建 sbt 启动脚本..." "写入 /usr/local/bin/sbt"
 cat > /usr/local/bin/sbt <<'SBT_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
 DEPLOY_DIR="/opt/sbt-stack"
 cd "$DEPLOY_DIR"
 
-echo "启动 AstrBot + SnowLuma ..."
-docker compose up -d
+# ---------- 读取配置 ----------
+get_ports_and_host() {
+  ASTRBOT_WEBUI_PORT=$(grep -oP '"\K[^"]+(?=:6185)' docker-compose.yml 2>/dev/null | sed -n '1p' || echo "6185")
+  SNOWLUMA_WEBUI_PORT=$(grep -oP '"\K[^"]+(?=:5099)' docker-compose.yml 2>/dev/null | sed -n '1p' || echo "5099")
+  SNOWLUMA_VNC_PORT=$(grep -oP '"\K[^"]+(?=:6081)' docker-compose.yml 2>/dev/null | sed -n '1p' || echo "6081")
 
-sleep 10
+  PUBLIC_IP=""
+  if [[ -f "$DEPLOY_DIR/.public_ip" ]]; then
+    PUBLIC_IP=$(cat "$DEPLOY_DIR/.public_ip")
+  fi
+  HOST="${PUBLIC_IP:-127.0.0.1}"
+}
 
-ASTRBOT_WEBUI_PORT=$(grep -oP '"\K[^"]+(?=:6185)' docker-compose.yml 2>/dev/null | sed -n '1p' || echo "6185")
-SNOWLUMA_WEBUI_PORT=$(grep -oP '"\K[^"]+(?=:5099)' docker-compose.yml 2>/dev/null | sed -n '1p' || echo "5099")
-SNOWLUMA_VNC_PORT=$(grep -oP '"\K[^"]+(?=:6081)' docker-compose.yml 2>/dev/null | sed -n '1p' || echo "6081")
+# ---------- 输出地址与密码 ----------
+show_info() {
+  get_ports_and_host
 
-PUBLIC_IP=""
-if [[ -f /opt/sbt-stack/.public_ip ]]; then
-  PUBLIC_IP=$(cat /opt/sbt-stack/.public_ip)
-fi
-HOST="${PUBLIC_IP:-127.0.0.1}"
+  LOG_OUTPUT=$(docker logs snowluma 2>&1 || true)
+  WEBUI_PASS=$(echo "$LOG_OUTPUT" | grep -iEo 'password[=:][^ ]+' | sed -n '1p' | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
+  VNC_PASS=$(echo "$LOG_OUTPUT" | grep -iEo '远程桌面密码[:：][^ ]*|remote desktop password[:：][^ ]*' | sed -n '1p' | sed -E 's/.*[:：]//' | tr -d ' ' || true)
 
-LOG_OUTPUT=$(docker logs snowluma 2>&1 || true)
-WEBUI_PASS=$(echo "$LOG_OUTPUT" | grep -iEo 'password[=:][^ ]+' | sed -n '1p' | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
-VNC_PASS=$(echo "$LOG_OUTPUT" | grep -iEo 'vnc[^ ]*password[=:][^ ]+' | sed -n '1p' | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
+  echo ""
+  echo "============================================================"
+  echo "  AstrBot + SnowLuma"
+  echo "============================================================"
+  echo ""
+  echo "【访问地址】"
+  echo "  AstrBot  WebUI : http://$HOST:$ASTRBOT_WEBUI_PORT"
+  echo "  SnowLuma WebUI : http://$HOST:$SNOWLUMA_WEBUI_PORT"
+  echo "  SnowLuma VNC   : http://$HOST:$SNOWLUMA_VNC_PORT"
+  echo ""
+  echo "【登录凭据】"
+  echo "  AstrBot WebUI  : 用户名 astrbot / 密码 astrbot（首次登录请修改）"
+  echo "  SnowLuma WebUI : 用户名 admin / 密码 ${WEBUI_PASS:-请执行 sbt logs 查看}"
+  echo "  SnowLuma VNC   : 密码 ${VNC_PASS:-请执行 sbt logs 查看}"
+  echo ""
+  echo "============================================================"
+}
 
-echo ""
-echo "============================================================"
-echo "  AstrBot + SnowLuma 已启动"
-echo "============================================================"
-echo ""
-echo "【访问地址】"
-echo "  AstrBot  WebUI : http://$HOST:$ASTRBOT_WEBUI_PORT"
-echo "  SnowLuma WebUI : http://$HOST:$SNOWLUMA_WEBUI_PORT"
-echo "  SnowLuma VNC   : http://$HOST:$SNOWLUMA_VNC_PORT"
-echo ""
-echo "【登录凭据】"
-echo "  AstrBot WebUI  : 用户名 astrbot / 密码 astrbot（首次登录请修改）"
-echo "  SnowLuma WebUI : 用户名 admin / 密码 ${WEBUI_PASS:-请执行 docker logs snowluma 查看}"
-echo "  SnowLuma VNC   : 密码 ${VNC_PASS:-请执行 docker logs snowluma 查看}"
-echo ""
-echo "============================================================"
+# ---------- 子命令 ----------
+CMD="${1:-start}"
+
+case "$CMD" in
+  start|up)
+    echo "启动 AstrBot + SnowLuma ..."
+    docker compose up -d
+    sleep 10
+    show_info
+    ;;
+
+  stop|down)
+    echo "停止 AstrBot + SnowLuma ..."
+    docker compose down
+    echo "已停止（数据保留在 $DEPLOY_DIR/*-data）"
+    ;;
+
+  restart)
+    echo "重启 AstrBot + SnowLuma ..."
+    docker compose down
+    docker compose up -d
+    sleep 10
+    show_info
+    ;;
+
+  status|ps)
+    docker compose ps
+    ;;
+
+  logs)
+    # 可选：sbt logs astrbot / sbt logs snowluma
+    SERVICE="${2:-}"
+    if [[ -n "$SERVICE" ]]; then
+      docker compose logs -f --tail=100 "$SERVICE"
+    else
+      docker compose logs -f --tail=100
+    fi
+    ;;
+
+  *)
+    echo "用法: sbt [start|stop|restart|status|logs]"
+    echo ""
+    echo "  sbt            启动服务并显示地址与密码（默认）"
+    echo "  sbt start      同上"
+    echo "  sbt stop       停止服务（保留数据）"
+    echo "  sbt restart    重启服务并显示地址与密码"
+    echo "  sbt status     查看容器状态"
+    echo "  sbt logs       实时查看全部日志"
+    echo "  sbt logs astrbot   只看 AstrBot 日志"
+    echo "  sbt logs snowluma  只看 SnowLuma 日志"
+    exit 1
+    ;;
+esac
 SBT_EOF
 chmod +x /usr/local/bin/sbt
 
@@ -275,19 +333,7 @@ cat > "$DEPLOY_DIR/连接指引.txt" <<GUIDE
   SnowLuma VNC   : 密码 ${SNOWLUMA_VNC_PASSWORD:-请执行 docker logs snowluma 查看}
   （SnowLuma 密码仅在首次启动时打印一次，之后保存在数据卷中）
 
-【下一步：在 AstrBot WebUI 中连接 SnowLuma】
-1. 打开 AstrBot WebUI: http://${HOST_DISPLAY}:${ASTRBOT_WEBUI_PORT}
-2. 左侧菜单 → 消息平台 → 新增适配器
-3. 选择 “aiocqhttp (OneBot v11)”
-4. 连接方式选择 “正向 WebSocket”
-5. 地址填写: ws://snowluma:${SNOWLUMA_ONEBOT_WS_PORT}
-6. Token 留空（除非你在 SnowLuma WebUI 中设置了 OneBot access token）
-7. 保存并启用
 
-【SnowLuma 登录 QQ】
-1. 打开 SnowLuma WebUI，使用 admin + 上述密码登录
-2. 在 WebUI 中启动 QQ 实例，用手机扫码登录
-3. 确保 OneBot WebSocket 服务端已开启（默认端口 ${SNOWLUMA_ONEBOT_WS_PORT}）
 
 【日常启动】
 输入 sbt 即可启动全部服务，并自动输出地址和密码。
