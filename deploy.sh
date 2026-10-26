@@ -196,7 +196,11 @@ for i in $(seq 1 20); do
   LOG_OUTPUT=$(docker logs snowluma 2>&1 || true)
 
   SNOWLUMA_WEBUI_PASSWORD=$(echo "$LOG_OUTPUT" | grep -iEo 'password[=:][^ ]+' | sed -n '1p' | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
-  SNOWLUMA_VNC_PASSWORD=$(echo "$LOG_OUTPUT" | grep -iEo 'vnc[^ ]*password[=:][^ ]+' | sed -n '1p' | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
+  SNOWLUMA_VNC_PASSWORD=$(echo "$LOG_OUTPUT" \
+  | grep -iE '远程桌面密码|remote desktop password' \
+  | sed -E 's/.*[:：][[:space:]]*//' \
+  | sed -n '1p' \
+  | tr -d ' \r' || true)
 
   if [[ -n "$SNOWLUMA_WEBUI_PASSWORD" && -n "$SNOWLUMA_VNC_PASSWORD" ]]; then
     break
@@ -232,8 +236,12 @@ show_info() {
 
   LOG_OUTPUT=$(docker logs snowluma 2>&1 || true)
   WEBUI_PASS=$(echo "$LOG_OUTPUT" | grep -iEo 'password[=:][^ ]+' | sed -n '1p' | cut -d'=' -f2- | cut -d':' -f2- | tr -d ' ' || true)
-  VNC_PASS=$(echo "$LOG_OUTPUT" | grep -iEo '远程桌面密码[:：][^ ]*|remote desktop password[:：][^ ]*' | sed -n '1p' | sed -E 's/.*[:：]//' | tr -d ' ' || true)
-
+  VNC_PASS=$(echo "$LOG_OUTPUT" \
+  | grep -iE '远程桌面密码|remote desktop password' \
+  | sed -E 's/.*[:：][[:space:]]*//' \
+  | sed -n '1p' \
+  | tr -d ' \r' || true)
+  
   echo ""
   echo "============================================================"
   echo "  AstrBot + SnowLuma"
