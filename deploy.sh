@@ -234,25 +234,27 @@ if [[ "$PUBLIC_ACCESS" =~ ^[Yy] ]]; then
   done
 
   if [[ -f "$DEPLOY_DIR/astrbot-data/cmd_config.json" ]]; then
-    # 用 Python 安全修改 JSON（改动 dashboard.host 为 0.0.0.0）
+    # 用 Python 安全修改 JSON（兼容 UTF-8 BOM）
     python3 - "$DEPLOY_DIR/astrbot-data/cmd_config.json" <<'PY'
 import json, sys
 path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
+
+# 读取：utf-8-sig 会自动剥离 BOM
+with open(path, "r", encoding="utf-8-sig") as f:
     cfg = json.load(f)
+
 cfg.setdefault("dashboard", {})
 cfg["dashboard"]["host"] = "0.0.0.0"
-# 如果配置里存在端口字段，与 compose 映射保持一致
-if "port" in cfg["dashboard"]:
-    pass  # 保持原值，用户端口由 compose 映射处理
+
+# 写回：使用 utf-8，不带 BOM
 with open(path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
+
 print("dashboard.host -> 0.0.0.0")
 PY
     docker restart astrbot >/dev/null
     echo -e "${GREEN}已放开 AstrBot dashboard.host，正在重启容器...${NC}"
     sleep 8
-    # 重启后 AstrBot 如果尚未改密，仍会重新打印 Initial password，重新提取一次
     ASTRBOT_LOG=$(docker logs astrbot 2>&1 || true)
     NEW_PASS=$(echo "$ASTRBOT_LOG" \
       | grep -i 'Initial password' \
