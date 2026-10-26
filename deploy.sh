@@ -93,7 +93,7 @@ echo -e "${YELLOW}[3/3] 安全设置${NC}"
 read -rsp "SnowLuma VNC 密码（直接回车使用随机生成）: " VNC_PASSWD
 echo ""
 if [[ -z "$VNC_PASSWD" ]]; then
-  VNC_PASSWD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12)
+  VNC_PASSWD=$(openssl rand -base64 12 | tr -d '/+=\n' | cut -c1-12)
   echo -e "${GREEN}已随机生成 VNC 密码: ${VNC_PASSWD}${NC}"
 fi
 
