@@ -38,8 +38,10 @@ Compose v2。
 
 服务器终端执行：
 
-```curl -fsSL -o install-astrbot-install.sh https://raw.githubusercontent.com/pixelcraft0516/docker-astrbot-snownluma-install-script/refs/heads/main/install-astrbot-snowluma.sh
+```
+curl -fsSL -o install-astrbot-install.sh https://raw.githubusercontent.com/pixelcraft0516/docker-astrbot-snownluma-install-script/refs/heads/main/install-astrbot-snowluma.sh
 sudo bash install-astrbot-install.sh
+
 ```
 
 脚本会先检查系统，然后询问：
