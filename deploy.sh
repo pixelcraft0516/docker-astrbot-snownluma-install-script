@@ -104,12 +104,30 @@ DEPLOY_DIR="/opt/sbt-stack"
 mkdir -p "$DEPLOY_DIR"/{astrbot-data,snowluma-data,snowluma-qq-config,snowluma-qq-data}
 
 # ---------- 1. 安装 Docker CE ----------
-step "安装 Docker CE..." "curl -fsSL https://get.docker.com | bash -s docker"
+# ---------- 1. 安装 Docker CE (兼容 Ubuntu 20.04 手动安装) ----------
+step "安装 Docker CE..." "手动添加源并安装 docker-ce (跳过不兼容的 model-plugin)"
+
 if ! command -v docker &>/dev/null; then
-  curl -fsSL https://get.docker.com | bash -s docker
+  # 安装基础依赖
+  apt-get update
+  apt-get install -y ca-certificates curl gnupg
+
+  # 添加 Docker 官方 GPG 密钥和源
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  # 更新源并只安装必需组件（不包含 docker-model-plugin）
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 fi
+
 systemctl enable docker --now &>/dev/null || true
 
+# 配置镜像加速（保留你原有的逻辑）
 if [[ ! -f /etc/docker/daemon.json ]]; then
   mkdir -p /etc/docker
   cat > /etc/docker/daemon.json <<'EOF'
@@ -119,7 +137,6 @@ if [[ ! -f /etc/docker/daemon.json ]]; then
 EOF
   systemctl restart docker
 fi
-
 # ---------- 2. 生成 docker-compose.yml ----------
 step "生成 docker-compose.yml..." "写入 $DEPLOY_DIR/docker-compose.yml"
 
