@@ -1,4 +1,4 @@
-#所有代码均由DeepSeekHarness进行操作，
+# 所有代码均由DeepSeekHarness进行生成
 
 # AstrBot + SnowLuma Ubuntu 一键部署
 
